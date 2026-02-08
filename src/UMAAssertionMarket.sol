@@ -262,8 +262,8 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
     /// @dev Funds move ONLY after resolution. Prevents re-entrancy via nonReentrant.
     ///      - If resolved TRUE: asserter gets market funds + bond returned by OO v3.
     ///      - If resolved FALSE: disputer gets market funds + bond returned by OO v3.
-    ///      Bond return from OO v3 is handled by OO v3 directly to this contract as WETH,
-    ///      then unwrapped here for the user.
+    ///      OO v3 returns bond WETH to this contract (since we are the asserter/disputer
+    ///      in OO v3). We unwrap WETH and include bondAmount in the payout.
     /// @param assertionId The resolved assertion to withdraw from.
     function withdraw(bytes32 assertionId) external nonReentrant {
         AssertionData storage data = assertions[assertionId];
@@ -277,15 +277,15 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
         uint256 payout;
 
         if (data.status == Status.ResolvedTrue) {
-            // Asserter wins: gets market funds
+            // Asserter wins: gets market funds + their bond back
             recipient = data.asserter;
-            payout = data.marketAmount;
+            payout = uint256(data.marketAmount) + uint256(data.bondAmount);
         } else {
-            // Disputer wins: gets market funds
+            // Disputer wins: gets market funds + bond
             // If no disputer (assertion resolved false without dispute — edge case),
             // funds go back to asserter
             recipient = data.disputer != address(0) ? data.disputer : data.asserter;
-            payout = data.marketAmount;
+            payout = uint256(data.marketAmount) + uint256(data.bondAmount);
         }
 
         if (payout == 0) revert NothingToWithdraw();

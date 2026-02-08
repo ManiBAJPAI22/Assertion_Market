@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity ^0.8.22;
 
-import {Test, console2} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {UMAAssertionMarket} from "../src/UMAAssertionMarket.sol";
 import {MockOptimisticOracleV3} from "./mocks/MockOptimisticOracleV3.sol";
 import {WETH9} from "./mocks/WETH9.sol";
@@ -196,12 +196,12 @@ contract UMAAssertionMarketTest is Test {
         UMAAssertionMarket.AssertionData memory data = market.getAssertionData(id);
         assertEq(uint8(data.status), uint8(UMAAssertionMarket.Status.ResolvedTrue));
 
-        // 5. Asserter withdraws market funds
+        // 5. Asserter withdraws market funds + bond
         uint256 balBefore = asserter.balance;
         vm.prank(asserter);
         market.withdraw(id);
 
-        assertEq(asserter.balance, balBefore + MARKET_AMOUNT);
+        assertEq(asserter.balance, balBefore + MARKET_AMOUNT + BOND);
     }
 
     function test_fullFlow_disputeDisputerWins() public {
@@ -219,12 +219,12 @@ contract UMAAssertionMarketTest is Test {
         UMAAssertionMarket.AssertionData memory data = market.getAssertionData(id);
         assertEq(uint8(data.status), uint8(UMAAssertionMarket.Status.ResolvedFalse));
 
-        // 5. Disputer withdraws market funds
+        // 5. Disputer withdraws market funds + bond
         uint256 balBefore = disputer.balance;
         vm.prank(disputer);
         market.withdraw(id);
 
-        assertEq(disputer.balance, balBefore + MARKET_AMOUNT);
+        assertEq(disputer.balance, balBefore + MARKET_AMOUNT + BOND);
     }
 
     function test_fullFlow_noDisputeSettleAfterLiveness() public {
@@ -241,12 +241,12 @@ contract UMAAssertionMarketTest is Test {
         UMAAssertionMarket.AssertionData memory data = market.getAssertionData(id);
         assertEq(uint8(data.status), uint8(UMAAssertionMarket.Status.ResolvedTrue));
 
-        // 5. Asserter withdraws market funds
+        // 5. Asserter withdraws market funds + bond
         uint256 balBefore = asserter.balance;
         vm.prank(asserter);
         market.withdraw(id);
 
-        assertEq(asserter.balance, balBefore + MARKET_AMOUNT);
+        assertEq(asserter.balance, balBefore + MARKET_AMOUNT + BOND);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -347,12 +347,12 @@ contract UMAAssertionMarketTest is Test {
         vm.warp(block.timestamp + LIVENESS + 1);
         market.settleAssertion(id);
 
-        // Asserter only gets their market amount, not the extra 5 ETH
+        // Asserter only gets their market amount + bond, not the extra 5 ETH
         uint256 balBefore = asserter.balance;
         vm.prank(asserter);
         market.withdraw(id);
 
-        assertEq(asserter.balance, balBefore + MARKET_AMOUNT);
+        assertEq(asserter.balance, balBefore + MARKET_AMOUNT + BOND);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -401,10 +401,10 @@ contract UMAAssertionMarketTest is Test {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // WITHDRAW WITH NO MARKET AMOUNT (bond-only assertion)
+    // WITHDRAW WITH NO MARKET AMOUNT (bond-only assertion — bond still returned)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function test_withdraw_revert_nothingToWithdraw_zeroMarket() public {
+    function test_withdraw_bondOnlyAssertion_returnsBond() public {
         // Create assertion with only bond, no market amount
         vm.prank(asserter);
         bytes32 id = market.createAssertion{value: BOND}(CLAIM);
@@ -412,8 +412,82 @@ contract UMAAssertionMarketTest is Test {
         vm.warp(block.timestamp + LIVENESS + 1);
         market.settleAssertion(id);
 
+        // Asserter should get their bond back even with zero market
+        uint256 balBefore = asserter.balance;
         vm.prank(asserter);
-        vm.expectRevert(UMAAssertionMarket.NothingToWithdraw.selector);
         market.withdraw(id);
+
+        assertEq(asserter.balance, balBefore + BOND);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EDGE CASE: LAST-SECOND DISPUTES (boundary test)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_lastSecondDispute_succeedsBeforeExpiry() public {
+        bytes32 id = _createAssertion();
+
+        // Warp to 1 second before liveness expires
+        vm.warp(block.timestamp + LIVENESS - 1);
+
+        // Dispute should succeed (block.timestamp < expirationTime)
+        vm.prank(disputer);
+        market.disputeAssertion{value: BOND}(id);
+
+        assertEq(uint8(market.getAssertionData(id).status), uint8(UMAAssertionMarket.Status.Disputed));
+    }
+
+    function test_lastSecondDispute_revertAtExpiry() public {
+        bytes32 id = _createAssertion();
+
+        // Warp to exactly when liveness expires
+        vm.warp(block.timestamp + LIVENESS);
+
+        // Dispute should fail (block.timestamp >= expirationTime)
+        vm.prank(disputer);
+        vm.expectRevert("Liveness expired");
+        market.disputeAssertion{value: BOND}(id);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EDGE CASE: THIRD PARTY CAN TRIGGER WITHDRAW (payout goes to winner)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_withdraw_thirdPartyTrigger_payoutGoesToWinner() public {
+        bytes32 id = _createAssertion();
+        vm.warp(block.timestamp + LIVENESS + 1);
+        market.settleAssertion(id);
+
+        // Stranger calls withdraw, but payout goes to asserter (winner)
+        uint256 asserterBalBefore = asserter.balance;
+        uint256 strangerBalBefore = stranger.balance;
+
+        vm.prank(stranger);
+        market.withdraw(id);
+
+        // Asserter received market funds + bond
+        assertEq(asserter.balance, asserterBalBefore + MARKET_AMOUNT + BOND);
+        // Stranger balance unchanged
+        assertEq(stranger.balance, strangerBalBefore);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EDGE CASE: CALLBACK IDEMPOTENT WITH FLIPPED TRUTHFULNESS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_callback_idempotent_flippedTruthfulness() public {
+        bytes32 id = _createAssertion();
+        vm.warp(block.timestamp + LIVENESS + 1);
+        market.settleAssertion(id);
+
+        // Status is ResolvedTrue
+        assertEq(uint8(market.getAssertionData(id).status), uint8(UMAAssertionMarket.Status.ResolvedTrue));
+
+        // Manually call callback with FALSE (simulating malicious/buggy oracle replay)
+        vm.prank(address(mockOO));
+        market.assertionResolvedCallback(id, false);
+
+        // Status must remain ResolvedTrue — cannot be flipped
+        assertEq(uint8(market.getAssertionData(id).status), uint8(UMAAssertionMarket.Status.ResolvedTrue));
     }
 }

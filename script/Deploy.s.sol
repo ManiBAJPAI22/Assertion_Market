@@ -12,7 +12,7 @@ contract Deploy is Script {
 
     // Configuration
     uint64  constant LIVENESS = 7200;       // 2 hours — standard dispute window
-    uint256 constant BOND     = 0;          // 0 = use OO v3 minimum bond for WETH
+    uint256 constant BOND     = 0.001 ether; // Explicit bond — OO v3 min for WETH on Sepolia is 0
 
     function run() external {
         vm.startBroadcast();
