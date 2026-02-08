@@ -4,7 +4,9 @@ pragma solidity ^0.8.22;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {OptimisticOracleV3Interface} from "./interfaces/OptimisticOracleV3Interface.sol";
-import {OptimisticOracleV3CallbackRecipientInterface} from "./interfaces/OptimisticOracleV3CallbackRecipientInterface.sol";
+import {
+    OptimisticOracleV3CallbackRecipientInterface
+} from "./interfaces/OptimisticOracleV3CallbackRecipientInterface.sol";
 import {IWETH9} from "./interfaces/IWETH9.sol";
 
 /// @title UMAAssertionMarket
@@ -37,10 +39,10 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
     /// @notice Resolution status of an assertion.
     /// @dev uint8 for tight struct packing.
     enum Status {
-        Active,         // 0 — assertion live, within liveness period
-        Disputed,       // 1 — disputed, awaiting DVM resolution
-        ResolvedTrue,   // 2 — oracle confirmed assertion is TRUE
-        ResolvedFalse   // 3 — oracle confirmed assertion is FALSE
+        Active, // 0 — assertion live, within liveness period
+        Disputed, // 1 — disputed, awaiting DVM resolution
+        ResolvedTrue, // 2 — oracle confirmed assertion is TRUE
+        ResolvedFalse // 3 — oracle confirmed assertion is FALSE
     }
 
     /// @notice Per-assertion state. Packed into 4 storage slots.
@@ -49,14 +51,14 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
     ///      Slot 3: disputer (20) + withdrawn (1) = 21 bytes
     ///      Slot 4: bondReturned (16) = 16 bytes
     struct AssertionData {
-        address asserter;       // 20 bytes — who created the assertion
-        uint64  timestamp;      // 8 bytes  — when assertion was created
-        Status  status;         // 1 byte   — current lifecycle status
-        uint128 bondAmount;     // 16 bytes — ETH bond amount (wrapped to WETH for OO v3)
-        uint128 marketAmount;   // 16 bytes — ETH market/bet amount
-        address disputer;       // 20 bytes — who disputed (address(0) if none)
-        bool    withdrawn;      // 1 byte   — whether funds have been withdrawn
-        uint128 bondReturned;   // 16 bytes — actual WETH returned by OO v3 on settlement
+        address asserter; // 20 bytes — who created the assertion
+        uint64 timestamp; // 8 bytes  — when assertion was created
+        Status status; // 1 byte   — current lifecycle status
+        uint128 bondAmount; // 16 bytes — ETH bond amount (wrapped to WETH for OO v3)
+        uint128 marketAmount; // 16 bytes — ETH market/bet amount
+        address disputer; // 20 bytes — who disputed (address(0) if none)
+        bool withdrawn; // 1 byte   — whether funds have been withdrawn
+        uint128 bondReturned; // 16 bytes — actual WETH returned by OO v3 on settlement
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -64,11 +66,7 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
     // ──────────────────────────────────────────────────────────────────────────
 
     event AssertionCreated(
-        bytes32 indexed assertionId,
-        address indexed asserter,
-        uint128 bondAmount,
-        uint128 marketAmount,
-        bytes claim
+        bytes32 indexed assertionId, address indexed asserter, uint128 bondAmount, uint128 marketAmount, bytes claim
     );
 
     event AssertionDisputed(bytes32 indexed assertionId, address indexed disputer, uint128 disputeBond);
@@ -82,9 +80,9 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
     // ──────────────────────────────────────────────────────────────────────────
 
     OptimisticOracleV3Interface public immutable oo;
-    IWETH9  public immutable weth;
+    IWETH9 public immutable weth;
     bytes32 public immutable defaultIdentifier;
-    uint64  public immutable defaultLiveness;
+    uint64 public immutable defaultLiveness;
     uint256 public immutable defaultBond;
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -102,12 +100,7 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
     /// @param _weth Address of the WETH9 contract.
     /// @param _defaultLiveness Liveness period in seconds (e.g. 7200 = 2 hours).
     /// @param _defaultBond Bond amount in wei. If 0, uses OO v3 minimum bond for WETH.
-    constructor(
-        address _oo,
-        address _weth,
-        uint64  _defaultLiveness,
-        uint256 _defaultBond
-    ) {
+    constructor(address _oo, address _weth, uint64 _defaultLiveness, uint256 _defaultBond) {
         oo = OptimisticOracleV3Interface(_oo);
         weth = IWETH9(_weth);
         defaultIdentifier = oo.defaultIdentifier();
@@ -142,14 +135,14 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
         // Submit assertion to OO v3
         assertionId = oo.assertTruth(
             claim,
-            address(this),      // asserter is this contract (bond payer)
-            address(this),      // callback recipient
-            address(0),         // no escalation manager
+            address(this), // asserter is this contract (bond payer)
+            address(this), // callback recipient
+            address(0), // no escalation manager
             defaultLiveness,
             IERC20(address(weth)),
             bond,
             defaultIdentifier,
-            bytes32(0)          // no domain
+            bytes32(0) // no domain
         );
 
         // Store assertion data (CEI: state before external calls already done via WETH)

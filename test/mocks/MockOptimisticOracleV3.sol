@@ -3,7 +3,9 @@ pragma solidity ^0.8.22;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {OptimisticOracleV3Interface} from "../../src/interfaces/OptimisticOracleV3Interface.sol";
-import {OptimisticOracleV3CallbackRecipientInterface} from "../../src/interfaces/OptimisticOracleV3CallbackRecipientInterface.sol";
+import {
+    OptimisticOracleV3CallbackRecipientInterface
+} from "../../src/interfaces/OptimisticOracleV3CallbackRecipientInterface.sol";
 
 /// @title MockOptimisticOracleV3
 /// @notice Simulates UMA's OO v3 for local Foundry testing (sandbox oracle pattern).
@@ -14,7 +16,7 @@ import {OptimisticOracleV3CallbackRecipientInterface} from "../../src/interfaces
 contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
     uint256 public minimumBond;
     bytes32 public constant DEFAULT_IDENTIFIER = bytes32("ASSERT_TRUTH");
-    uint64  public constant DEFAULT_LIVENESS = 7200;
+    uint64 public constant DEFAULT_LIVENESS = 7200;
 
     uint256 private _nextId;
 
@@ -28,8 +30,8 @@ contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
         uint64 expirationTime;
         bool settled;
         bool disputed;
-        bool resolved;              // DVM has voted (set by resolveAssertion)
-        bool settlementResolution;  // DVM result (true = asserter wins)
+        bool resolved; // DVM has voted (set by resolveAssertion)
+        bool settlementResolution; // DVM result (true = asserter wins)
     }
 
     mapping(bytes32 => StoredAssertion) public storedAssertions;
@@ -102,8 +104,7 @@ contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
 
         // Notify callback recipient
         if (a.callbackRecipient != address(0)) {
-            OptimisticOracleV3CallbackRecipientInterface(a.callbackRecipient)
-                .assertionDisputedCallback(assertionId);
+            OptimisticOracleV3CallbackRecipientInterface(a.callbackRecipient).assertionDisputedCallback(assertionId);
         }
     }
 

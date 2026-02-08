@@ -18,11 +18,11 @@ contract UMAAssertionMarketTest is Test {
     address public disputer = makeAddr("disputer");
     address public stranger = makeAddr("stranger");
 
-    uint64  constant LIVENESS = 7200;    // 2 hours
+    uint64 constant LIVENESS = 7200; // 2 hours
     uint256 constant BOND = 0.1 ether;
     uint256 constant BOND_REWARD = BOND / 2; // Half of loser's bond (UMA mainnet economics)
     uint256 constant MARKET_AMOUNT = 1 ether;
-    bytes   constant CLAIM = "ETH price was above $2,500 on 1 Feb 2026 (UTC)";
+    bytes constant CLAIM = "ETH price was above $2,500 on 1 Feb 2026 (UTC)";
 
     function setUp() public {
         // Deploy sandbox oracle environment

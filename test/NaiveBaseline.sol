@@ -4,7 +4,9 @@ pragma solidity ^0.8.22;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {OptimisticOracleV3Interface} from "../src/interfaces/OptimisticOracleV3Interface.sol";
-import {OptimisticOracleV3CallbackRecipientInterface} from "../src/interfaces/OptimisticOracleV3CallbackRecipientInterface.sol";
+import {
+    OptimisticOracleV3CallbackRecipientInterface
+} from "../src/interfaces/OptimisticOracleV3CallbackRecipientInterface.sol";
 import {IWETH9} from "../src/interfaces/IWETH9.sol";
 
 /// @title UMAAssertionMarketNaive — UNOPTIMIZED baseline for gas comparison
@@ -15,23 +17,24 @@ import {IWETH9} from "../src/interfaces/IWETH9.sol";
 ///         - No immutables (uses regular storage variables)
 ///         - Uses `bytes memory` instead of `bytes calldata`
 contract UMAAssertionMarketNaive is OptimisticOracleV3CallbackRecipientInterface, ReentrancyGuard {
-
     // ── NO custom errors — uses require strings instead ──
 
     // ── UNPACKED struct: each field gets its own slot ──
     struct AssertionData {
-        address asserter;       // slot 1 (20 bytes, wastes 12)
-        uint256 timestamp;      // slot 2 (32 bytes — full uint256 instead of uint64)
-        uint256 status;         // slot 3 (32 bytes — full uint256 instead of uint8 enum)
-        uint256 bondAmount;     // slot 4 (32 bytes — full uint256 instead of uint128)
-        uint256 marketAmount;   // slot 5 (32 bytes — full uint256 instead of uint128)
-        address disputer;       // slot 6 (20 bytes, wastes 12)
-        bool    withdrawn;      // slot 7 (1 byte, wastes 31)
-        uint256 bondReturned;   // slot 8 (32 bytes — full uint256 instead of uint128)
+        address asserter; // slot 1 (20 bytes, wastes 12)
+        uint256 timestamp; // slot 2 (32 bytes — full uint256 instead of uint64)
+        uint256 status; // slot 3 (32 bytes — full uint256 instead of uint8 enum)
+        uint256 bondAmount; // slot 4 (32 bytes — full uint256 instead of uint128)
+        uint256 marketAmount; // slot 5 (32 bytes — full uint256 instead of uint128)
+        address disputer; // slot 6 (20 bytes, wastes 12)
+        bool withdrawn; // slot 7 (1 byte, wastes 31)
+        uint256 bondReturned; // slot 8 (32 bytes — full uint256 instead of uint128)
     }
     // Total: 8 storage slots (vs 4 in optimized)
 
-    event AssertionCreated(bytes32 indexed assertionId, address indexed asserter, uint256 bondAmount, uint256 marketAmount, bytes claim);
+    event AssertionCreated(
+        bytes32 indexed assertionId, address indexed asserter, uint256 bondAmount, uint256 marketAmount, bytes claim
+    );
     event AssertionDisputed(bytes32 indexed assertionId, address indexed disputer, uint256 disputeBond);
     event AssertionResolved(bytes32 indexed assertionId, bool assertedTruthfully);
     event FundsWithdrawn(bytes32 indexed assertionId, address indexed recipient, uint256 amount);

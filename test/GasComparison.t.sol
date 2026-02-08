@@ -19,10 +19,10 @@ contract GasComparisonTest is Test {
     address public user1 = makeAddr("user1");
     address public user2 = makeAddr("user2");
 
-    uint64  constant LIVENESS = 7200;
+    uint64 constant LIVENESS = 7200;
     uint256 constant BOND = 0.1 ether;
     uint256 constant MARKET = 1 ether;
-    bytes   constant CLAIM = "Test claim for gas comparison";
+    bytes constant CLAIM = "Test claim for gas comparison";
 
     function setUp() public {
         weth = new WETH9();

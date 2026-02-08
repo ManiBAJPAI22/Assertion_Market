@@ -7,12 +7,12 @@ import {UMAAssertionMarket} from "../src/UMAAssertionMarket.sol";
 /// @title Deploy — Deploys UMAAssertionMarket to Sepolia using live UMA OO v3.
 contract Deploy is Script {
     // Sepolia addresses
-    address constant OO_V3  = 0xFd9e2642a170aDD10F53Ee14a93FcF2F31924944;
-    address constant WETH9  = 0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9;
+    address constant OO_V3 = 0xFd9e2642a170aDD10F53Ee14a93FcF2F31924944;
+    address constant WETH9 = 0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9;
 
     // Configuration
-    uint64  constant LIVENESS = 7200;       // 2 hours — standard dispute window
-    uint256 constant BOND     = 0.001 ether; // Explicit bond — OO v3 min for WETH on Sepolia is 0
+    uint64 constant LIVENESS = 7200; // 2 hours — standard dispute window
+    uint256 constant BOND = 0.001 ether; // Explicit bond — OO v3 min for WETH on Sepolia is 0
 
     function run() external {
         vm.startBroadcast();
