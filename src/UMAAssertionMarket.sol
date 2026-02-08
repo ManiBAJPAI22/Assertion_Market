@@ -14,6 +14,7 @@ import {IWETH9} from "./interfaces/IWETH9.sol";
 ///         funds move only after oracle finality.
 /// @dev Two-party model: asserter stakes ETH on a claim, any address can dispute.
 ///      Implements OptimisticOracleV3CallbackRecipientInterface for oracle callbacks.
+///      Bond settlement is handled by UMA (returned via WETH), market settlement by this contract.
 contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────────────────────
     // Custom Errors (gas-efficient vs require strings)
@@ -24,6 +25,7 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
     error AssertionNotActive();
     error AssertionNotResolved();
     error AlreadyWithdrawn();
+    error SelfDispute();
     error OnlyOracle();
     error NothingToWithdraw();
     error TransferFailed();
@@ -41,10 +43,11 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
         ResolvedFalse   // 3 — oracle confirmed assertion is FALSE
     }
 
-    /// @notice Per-assertion state. Packed into 3 storage slots.
+    /// @notice Per-assertion state. Packed into 4 storage slots.
     /// @dev Slot 1: asserter (20) + timestamp (8) + status (1) = 29 bytes
     ///      Slot 2: bondAmount (16) + marketAmount (16) = 32 bytes
     ///      Slot 3: disputer (20) + withdrawn (1) = 21 bytes
+    ///      Slot 4: bondReturned (16) = 16 bytes
     struct AssertionData {
         address asserter;       // 20 bytes — who created the assertion
         uint64  timestamp;      // 8 bytes  — when assertion was created
@@ -53,6 +56,7 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
         uint128 marketAmount;   // 16 bytes — ETH market/bet amount
         address disputer;       // 20 bytes — who disputed (address(0) if none)
         bool    withdrawn;      // 1 byte   — whether funds have been withdrawn
+        uint128 bondReturned;   // 16 bytes — actual WETH returned by OO v3 on settlement
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -156,7 +160,8 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
             bondAmount: bondAmt,
             marketAmount: marketAmt,
             disputer: address(0),
-            withdrawn: false
+            withdrawn: false,
+            bondReturned: 0
         });
 
         emit AssertionCreated(assertionId, msg.sender, bondAmt, marketAmt, claim);
@@ -173,6 +178,7 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
         AssertionData storage data = assertions[assertionId];
         if (data.asserter == address(0)) revert AssertionNotFound();
         if (data.status != Status.Active) revert AssertionNotActive();
+        if (msg.sender == data.asserter) revert SelfDispute();
 
         uint256 bond = _getEffectiveBond();
         if (msg.value < bond) revert InsufficientETH();
@@ -248,22 +254,34 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
     // Core: Settlement
     // ──────────────────────────────────────────────────────────────────────────
 
-    /// @notice Trigger settlement on OO v3. This will cause OO v3 to call
-    ///         assertionResolvedCallback if the assertion is past its liveness period.
+    /// @notice Trigger settlement on OO v3. Snapshots the WETH returned by OO v3
+    ///         to track per-assertion bond returns (bond settlement handled by UMA).
     /// @param assertionId The assertion to settle.
     function settleAssertion(bytes32 assertionId) external {
         AssertionData storage data = assertions[assertionId];
         if (data.asserter == address(0)) revert AssertionNotFound();
+
+        // Snapshot WETH balance before OO v3 settlement
+        uint256 wethBefore = weth.balanceOf(address(this));
+
         // OO v3 handles the liveness check internally and reverts if too early.
+        // On settlement, OO v3 transfers bond WETH back to this contract and fires callback.
         oo.settleAssertion(assertionId);
+
+        // Track actual WETH returned by OO v3 for this specific assertion
+        uint256 wethAfter = weth.balanceOf(address(this));
+        if (wethAfter > wethBefore) {
+            data.bondReturned = uint128(wethAfter - wethBefore);
+        }
     }
 
     /// @notice Withdraw entitled funds after oracle finality (pull-over-push pattern).
-    /// @dev Funds move ONLY after resolution. Prevents re-entrancy via nonReentrant.
-    ///      - If resolved TRUE: asserter gets market funds + bond returned by OO v3.
-    ///      - If resolved FALSE: disputer gets market funds + bond returned by OO v3.
-    ///      OO v3 returns bond WETH to this contract (since we are the asserter/disputer
-    ///      in OO v3). We unwrap WETH and include bondAmount in the payout.
+    /// @dev Settlement is split per assessment 4.4:
+    ///      - Bond Settlement (Handled by UMA): OO v3 returns WETH to this contract.
+    ///        Amount depends on outcome: 1× bond (no dispute) or 1.5× bond (dispute winner
+    ///        gets their bond + half loser's; UMA Store keeps the other half).
+    ///      - Market Settlement (Handled by Us): market/bet ETH goes to the winner.
+    ///      Winner = asserter if TRUE, disputer if FALSE.
     /// @param assertionId The resolved assertion to withdraw from.
     function withdraw(bytes32 assertionId) external nonReentrant {
         AssertionData storage data = assertions[assertionId];
@@ -274,19 +292,19 @@ contract UMAAssertionMarket is OptimisticOracleV3CallbackRecipientInterface, Ree
         if (data.withdrawn) revert AlreadyWithdrawn();
 
         address recipient;
-        uint256 payout;
 
         if (data.status == Status.ResolvedTrue) {
-            // Asserter wins: gets market funds + their bond back
+            // Asserter wins: gets market funds + bond returned by OO v3
             recipient = data.asserter;
-            payout = uint256(data.marketAmount) + uint256(data.bondAmount);
         } else {
-            // Disputer wins: gets market funds + bond
+            // Disputer wins: gets market funds + bond returned by OO v3
             // If no disputer (assertion resolved false without dispute — edge case),
             // funds go back to asserter
             recipient = data.disputer != address(0) ? data.disputer : data.asserter;
-            payout = uint256(data.marketAmount) + uint256(data.bondAmount);
         }
+
+        // Payout = market settlement (our job) + bond settlement (UMA's return)
+        uint256 payout = uint256(data.marketAmount) + uint256(data.bondReturned);
 
         if (payout == 0) revert NothingToWithdraw();
 

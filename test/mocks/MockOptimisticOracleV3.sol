@@ -7,7 +7,10 @@ import {OptimisticOracleV3CallbackRecipientInterface} from "../../src/interfaces
 
 /// @title MockOptimisticOracleV3
 /// @notice Simulates UMA's OO v3 for local Foundry testing (sandbox oracle pattern).
-///         Allows test code to control assertion resolution via resolveAssertion().
+///         Mirrors mainnet bond settlement: winner gets 1.5× bond (their bond + half loser's),
+///         UMA Store (simulated) retains 0.5× bond.
+///         Uses two-step dispute resolution: resolveAssertion() sets the DVM result,
+///         then settleAssertion() executes the settlement (matching real OO v3 flow).
 contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
     uint256 public minimumBond;
     bytes32 public constant DEFAULT_IDENTIFIER = bytes32("ASSERT_TRUTH");
@@ -25,7 +28,8 @@ contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
         uint64 expirationTime;
         bool settled;
         bool disputed;
-        bool settlementResolution;
+        bool resolved;              // DVM has voted (set by resolveAssertion)
+        bool settlementResolution;  // DVM result (true = asserter wins)
     }
 
     mapping(bytes32 => StoredAssertion) public storedAssertions;
@@ -72,6 +76,7 @@ contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
             expirationTime: uint64(block.timestamp) + liveness,
             settled: false,
             disputed: false,
+            resolved: false,
             settlementResolution: false
         });
 
@@ -108,9 +113,8 @@ contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
         require(!a.settled, "Already settled");
 
         if (a.disputed) {
-            // Disputed assertions must be resolved via resolveAssertion() first
-            require(a.settlementResolution || a.settled, "Not yet resolved by oracle");
-            // settlementResolution is set by resolveAssertion()
+            // Disputed: DVM must have resolved first
+            require(a.resolved, "Not yet resolved by oracle");
         } else {
             // Undisputed: must be past liveness
             require(block.timestamp >= a.expirationTime, "Liveness not expired");
@@ -119,17 +123,19 @@ contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
 
         a.settled = true;
 
-        // Return bond to winner
-        if (a.settlementResolution) {
-            // Assertion is true: return bond to asserter
+        // ── Bond Settlement (mirrors mainnet OO v3 economics) ────────────
+        if (!a.disputed) {
+            // No dispute: return full bond to asserter
             a.currency.transfer(a.asserter, a.bond);
-            if (a.disputed) {
-                // Disputer loses their bond (stays in mock / burned)
-            }
+        } else if (a.settlementResolution) {
+            // Disputed, asserter wins: asserter gets bond + half of disputer's bond
+            // UMA Store (mock) retains the other half (0.5× bond)
+            a.currency.transfer(a.asserter, a.bond + a.bond / 2);
         } else {
-            // Assertion is false: return bond to disputer, slash asserter
+            // Disputed, disputer wins: disputer gets bond + half of asserter's bond
+            // UMA Store (mock) retains the other half (0.5× bond)
             if (a.disputer != address(0)) {
-                a.currency.transfer(a.disputer, a.bond * 2); // disputer gets both bonds
+                a.currency.transfer(a.disputer, a.bond + a.bond / 2);
             }
         }
 
@@ -172,7 +178,8 @@ contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
 
     // ── Sandbox-specific: Oracle Resolution ──────────────────────────────────
 
-    /// @notice Simulate DVM resolution (sandbox only). Call this to resolve a disputed assertion.
+    /// @notice Simulate DVM vote result (sandbox only). Sets the resolution but does NOT settle.
+    ///         Call settleAssertion() afterwards to execute settlement (matching real OO v3 flow).
     /// @param assertionId The disputed assertion.
     /// @param truthful True = asserter wins, False = disputer wins.
     function resolveAssertion(bytes32 assertionId, bool truthful) external {
@@ -180,23 +187,10 @@ contract MockOptimisticOracleV3 is OptimisticOracleV3Interface {
         require(a.asserter != address(0), "Assertion not found");
         require(a.disputed, "Not disputed");
         require(!a.settled, "Already settled");
+        require(!a.resolved, "Already resolved");
 
+        a.resolved = true;
         a.settlementResolution = truthful;
-        a.settled = true;
-
-        // Return bonds
-        if (truthful) {
-            a.currency.transfer(a.asserter, a.bond);
-        } else {
-            if (a.disputer != address(0)) {
-                a.currency.transfer(a.disputer, a.bond * 2);
-            }
-        }
-
-        // Notify callback recipient
-        if (a.callbackRecipient != address(0)) {
-            OptimisticOracleV3CallbackRecipientInterface(a.callbackRecipient)
-                .assertionResolvedCallback(assertionId, truthful);
-        }
+        // Settlement happens when settleAssertion() is called (two-step flow)
     }
 }

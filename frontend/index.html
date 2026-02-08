@@ -852,6 +852,7 @@
         <div class="data-row"><span class="dlabel">Asserter</span><span class="dvalue" id="lrAsserter">---</span></div>
         <div class="data-row"><span class="dlabel">Disputer</span><span class="dvalue" id="lrDisputer">---</span></div>
         <div class="data-row"><span class="dlabel">Bond</span><span class="dvalue" id="lrBond">---</span></div>
+        <div class="data-row"><span class="dlabel">Bond Returned</span><span class="dvalue" id="lrBondReturned">---</span></div>
         <div class="data-row"><span class="dlabel">Market Stake</span><span class="dvalue" id="lrMarket">---</span></div>
         <div class="data-row"><span class="dlabel">Created</span><span class="dvalue" id="lrTime">---</span></div>
         <div class="data-row"><span class="dlabel">Withdrawn</span><span class="dvalue" id="lrWithdrawn">---</span></div>
@@ -894,13 +895,13 @@
 <script>
 const CONTRACTS = {
   live: {
-    market: '0xDe13A4ba6b4eB0100f599228fA64d1c605d9345F',
+    market: '0x8B3EdFDa4f8fBe460CaB65659a84B18e0a12B58A',
     mockOO: null,
     label: 'Live OO v3'
   },
   sandbox: {
-    market: '0x44c399D986E8E451cbeF6b52aF152fa846bAA66c',
-    mockOO: '0x64d6b8CDe5a488b148A9E6FD53fD3d4a54Cce923',
+    market: '0xb7124808330784A14fA5272846F35e1203E826D9',
+    mockOO: '0xB7f6f30D13F36c1d8b6E807C5b8ad0dDCd7773eE',
     label: 'Sandbox'
   }
 };
@@ -913,7 +914,7 @@ const MARKET_ABI = [
   'function settleAssertion(bytes32 assertionId) external',
   'function withdraw(bytes32 assertionId) external',
   'function getEffectiveBond() external view returns (uint256)',
-  'function getAssertionData(bytes32 assertionId) external view returns (tuple(address asserter, uint64 timestamp, uint8 status, uint128 bondAmount, uint128 marketAmount, address disputer, bool withdrawn))',
+  'function getAssertionData(bytes32 assertionId) external view returns (tuple(address asserter, uint64 timestamp, uint8 status, uint128 bondAmount, uint128 marketAmount, address disputer, bool withdrawn, uint128 bondReturned))',
   'function defaultLiveness() external view returns (uint64)',
   'function defaultBond() external view returns (uint256)',
   'event AssertionCreated(bytes32 indexed assertionId, address indexed asserter, uint128 bondAmount, uint128 marketAmount, bytes claim)',
@@ -1143,6 +1144,10 @@ async function doLookup() {
     $('lrAsserter').textContent = d.asserter;
     $('lrDisputer').textContent = d.disputer === ethers.ZeroAddress ? '(none)' : d.disputer;
     $('lrBond').textContent = ethers.formatEther(d.bondAmount) + ' ETH';
+    const br = d.bondReturned;
+    $('lrBondReturned').textContent = br > 0n
+      ? ethers.formatEther(br) + ' ETH' + (br > d.bondAmount ? ' (incl. reward)' : '')
+      : 'Pending settlement';
     $('lrMarket').textContent = ethers.formatEther(d.marketAmount) + ' ETH';
     $('lrTime').textContent = new Date(Number(d.timestamp) * 1000).toLocaleString();
     $('lrWithdrawn').textContent = d.withdrawn ? 'Yes' : 'No';
@@ -1153,14 +1158,18 @@ async function doLookup() {
     const actions = $('lrActions');
     actions.innerHTML = '';
 
-    if (statusIdx === 0) {
+    const expiresAt = Number(d.timestamp) + currentLiveness;
+    const now = Math.floor(Date.now() / 1000);
+    const livenessExpired = now >= expiresAt;
+
+    if (statusIdx === 0 && !livenessExpired) {
       const disputeBtn = document.createElement('button');
       disputeBtn.className = 'btn btn-rust btn-sm';
       disputeBtn.textContent = 'Dispute (' + ethers.formatEther(currentBond) + ' ETH)';
       disputeBtn.onclick = () => doDispute(id);
       actions.appendChild(disputeBtn);
     }
-    if (statusIdx === 0 || statusIdx === 1) {
+    if ((statusIdx === 0 && livenessExpired) || statusIdx === 1) {
       const settleBtn = document.createElement('button');
       settleBtn.className = 'btn btn-teal btn-sm';
       settleBtn.textContent = 'Settle';
@@ -1241,11 +1250,17 @@ async function doResolve(truthful) {
   const label = truthful ? 'TRUE' : 'FALSE';
   const t = toast(`Resolving as ${label}...`, 'pending', 0);
   try {
-    const tx = await mockOOContract.resolveAssertion(currentLookupId, truthful);
-    t.textContent = 'TX sent: ' + tx.hash.slice(0, 10) + '...';
-    await tx.wait();
+    // Step 1: Set DVM result
+    const tx1 = await mockOOContract.resolveAssertion(currentLookupId, truthful);
+    t.textContent = 'Resolve TX sent: ' + tx1.hash.slice(0, 10) + '...';
+    await tx1.wait();
+    // Step 2: Settle (triggers bond return + callback)
+    t.textContent = 'Settling...';
+    const tx2 = await marketContract.settleAssertion(currentLookupId);
+    t.textContent = 'Settle TX sent: ' + tx2.hash.slice(0, 10) + '...';
+    await tx2.wait();
     t.remove();
-    toast(`Resolved as ${label}!`, 'success');
+    toast(`Resolved as ${label} and settled!`, 'success');
     doLookup();
   } catch (e) { t.remove(); toast('Resolve failed: ' + (e.reason || e.message), 'error'); }
 }
@@ -1384,10 +1399,20 @@ async function loadFeed() {
       } catch(_) {}
 
       let timerHtml = '';
+      let displayStatusIdx = statusIdx;
       if (statusIdx === 0 && feedTimestamp > 0 && currentLiveness > 0) {
         const tl = formatTimeLeft(feedTimestamp);
-        timerHtml = `<span class="feed-timer${tl.urgent ? ' urgent' : ''}">${tl.text}</span>`;
+        if (tl.text === 'expired') {
+          // Liveness expired but not yet settled — show as "Settleable"
+          timerHtml = `<span class="feed-timer">settleable</span>`;
+          displayStatusIdx = -1; // special: expired but unsettled
+        } else {
+          timerHtml = `<span class="feed-timer${tl.urgent ? ' urgent' : ''}">${tl.text}</span>`;
+        }
       }
+
+      const tagClass = displayStatusIdx === -1 ? 'tag-disputed' : TAG_CLASS[displayStatusIdx];
+      const tagText = displayStatusIdx === -1 ? 'Expired' : STATUS_MAP[displayStatusIdx];
 
       const row = document.createElement('div');
       row.className = 'feed-row';
@@ -1395,7 +1420,7 @@ async function loadFeed() {
         <span class="fid">${id.slice(0, 14)}...</span>
         <span class="fclaim">${escapeHtml(claimText)}</span>
         ${timerHtml}
-        <span class="tag ${TAG_CLASS[statusIdx]}">${STATUS_MAP[statusIdx]}</span>
+        <span class="tag ${tagClass}">${tagText}</span>
       `;
       row.onclick = () => {
         $('lookupId').value = id;

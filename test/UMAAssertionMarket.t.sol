@@ -8,6 +8,7 @@ import {WETH9} from "./mocks/WETH9.sol";
 
 /// @title UMAAssertionMarketTest
 /// @notice Comprehensive test suite using sandbox oracle (MockOptimisticOracleV3).
+///         Mock mirrors mainnet OO v3 bond economics: winner gets 1.5× bond in disputes.
 contract UMAAssertionMarketTest is Test {
     UMAAssertionMarket public market;
     MockOptimisticOracleV3 public mockOO;
@@ -19,6 +20,7 @@ contract UMAAssertionMarketTest is Test {
 
     uint64  constant LIVENESS = 7200;    // 2 hours
     uint256 constant BOND = 0.1 ether;
+    uint256 constant BOND_REWARD = BOND / 2; // Half of loser's bond (UMA mainnet economics)
     uint256 constant MARKET_AMOUNT = 1 ether;
     bytes   constant CLAIM = "ETH price was above $2,500 on 1 Feb 2026 (UTC)";
 
@@ -64,6 +66,7 @@ contract UMAAssertionMarketTest is Test {
         assertEq(data.marketAmount, uint128(MARKET_AMOUNT));
         assertEq(data.disputer, address(0));
         assertFalse(data.withdrawn);
+        assertEq(data.bondReturned, 0);
     }
 
     function test_createAssertion_emitsEvent() public {
@@ -151,6 +154,15 @@ contract UMAAssertionMarketTest is Test {
         market.disputeAssertion{value: BOND - 1}(id);
     }
 
+    function test_disputeAssertion_revert_selfDispute() public {
+        bytes32 id = _createAssertion();
+
+        // Asserter tries to dispute their own assertion
+        vm.prank(asserter);
+        vm.expectRevert(UMAAssertionMarket.SelfDispute.selector);
+        market.disputeAssertion{value: BOND}(id);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CALLBACK SECURITY TESTS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -178,7 +190,7 @@ contract UMAAssertionMarketTest is Test {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // FULL DISPUTE + RESOLUTION FLOW (Sandbox Oracle)
+    // FULL DISPUTE + RESOLUTION FLOW (Two-step: resolve → settle)
     // ═══════════════════════════════════════════════════════════════════════════
 
     function test_fullFlow_disputeAsserterWins() public {
@@ -189,19 +201,23 @@ contract UMAAssertionMarketTest is Test {
         vm.prank(disputer);
         market.disputeAssertion{value: BOND}(id);
 
-        // 3. Oracle resolves: asserter wins (truthful)
+        // 3. DVM resolves: asserter wins (truthful)
         mockOO.resolveAssertion(id, true);
 
-        // 4. Verify status
+        // 4. Settle (triggers bond return + callback)
+        market.settleAssertion(id);
+
+        // 5. Verify status and bondReturned
         UMAAssertionMarket.AssertionData memory data = market.getAssertionData(id);
         assertEq(uint8(data.status), uint8(UMAAssertionMarket.Status.ResolvedTrue));
+        assertEq(data.bondReturned, uint128(BOND + BOND_REWARD)); // 1.5× bond
 
-        // 5. Asserter withdraws market funds + bond
+        // 6. Asserter withdraws: market + bond + reward
         uint256 balBefore = asserter.balance;
         vm.prank(asserter);
         market.withdraw(id);
 
-        assertEq(asserter.balance, balBefore + MARKET_AMOUNT + BOND);
+        assertEq(asserter.balance, balBefore + MARKET_AMOUNT + BOND + BOND_REWARD);
     }
 
     function test_fullFlow_disputeDisputerWins() public {
@@ -212,19 +228,23 @@ contract UMAAssertionMarketTest is Test {
         vm.prank(disputer);
         market.disputeAssertion{value: BOND}(id);
 
-        // 3. Oracle resolves: disputer wins (not truthful)
+        // 3. DVM resolves: disputer wins (not truthful)
         mockOO.resolveAssertion(id, false);
 
-        // 4. Verify status
+        // 4. Settle (triggers bond return + callback)
+        market.settleAssertion(id);
+
+        // 5. Verify status and bondReturned
         UMAAssertionMarket.AssertionData memory data = market.getAssertionData(id);
         assertEq(uint8(data.status), uint8(UMAAssertionMarket.Status.ResolvedFalse));
+        assertEq(data.bondReturned, uint128(BOND + BOND_REWARD)); // 1.5× bond
 
-        // 5. Disputer withdraws market funds + bond
+        // 6. Disputer withdraws: market + bond + reward
         uint256 balBefore = disputer.balance;
         vm.prank(disputer);
         market.withdraw(id);
 
-        assertEq(disputer.balance, balBefore + MARKET_AMOUNT + BOND);
+        assertEq(disputer.balance, balBefore + MARKET_AMOUNT + BOND + BOND_REWARD);
     }
 
     function test_fullFlow_noDisputeSettleAfterLiveness() public {
@@ -234,14 +254,15 @@ contract UMAAssertionMarketTest is Test {
         // 2. Warp past liveness
         vm.warp(block.timestamp + LIVENESS + 1);
 
-        // 3. Settle (triggers callback from mock OO)
+        // 3. Settle (triggers callback from mock OO — no dispute, full bond back)
         market.settleAssertion(id);
 
-        // 4. Verify resolved as true (undisputed)
+        // 4. Verify resolved as true (undisputed) with full bond returned
         UMAAssertionMarket.AssertionData memory data = market.getAssertionData(id);
         assertEq(uint8(data.status), uint8(UMAAssertionMarket.Status.ResolvedTrue));
+        assertEq(data.bondReturned, uint128(BOND)); // 1× bond (no dispute)
 
-        // 5. Asserter withdraws market funds + bond
+        // 5. Asserter withdraws: market + full bond
         uint256 balBefore = asserter.balance;
         vm.prank(asserter);
         market.withdraw(id);
@@ -264,6 +285,14 @@ contract UMAAssertionMarketTest is Test {
     function test_settleAssertion_revert_notFound() public {
         vm.expectRevert(UMAAssertionMarket.AssertionNotFound.selector);
         market.settleAssertion(bytes32(uint256(999)));
+    }
+
+    function test_settleAssertion_revert_disputedButNotResolved() public {
+        bytes32 id = _createAndDispute();
+
+        // Try to settle without DVM resolution
+        vm.expectRevert("Not yet resolved by oracle");
+        market.settleAssertion(id);
     }
 
     function test_withdraw_revert_notResolved() public {
@@ -322,13 +351,18 @@ contract UMAAssertionMarketTest is Test {
         // Resolve id1 as false (disputer wins)
         mockOO.resolveAssertion(id1, false);
 
-        // Settle id2 normally
+        // Settle both (id2 needs liveness to pass first)
         vm.warp(block.timestamp + LIVENESS + 1);
+        market.settleAssertion(id1);
         market.settleAssertion(id2);
 
         // id1 is ResolvedFalse, id2 is ResolvedTrue
         assertEq(uint8(market.getAssertionData(id1).status), uint8(UMAAssertionMarket.Status.ResolvedFalse));
         assertEq(uint8(market.getAssertionData(id2).status), uint8(UMAAssertionMarket.Status.ResolvedTrue));
+
+        // Verify per-assertion bondReturned tracking
+        assertEq(market.getAssertionData(id1).bondReturned, uint128(BOND + BOND_REWARD)); // disputed: 1.5×
+        assertEq(market.getAssertionData(id2).bondReturned, uint128(BOND)); // undisputed: 1×
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -398,6 +432,7 @@ contract UMAAssertionMarketTest is Test {
         assertEq(data.asserter, address(0));
         assertEq(data.bondAmount, 0);
         assertEq(data.marketAmount, 0);
+        assertEq(data.bondReturned, 0);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -489,5 +524,65 @@ contract UMAAssertionMarketTest is Test {
 
         // Status must remain ResolvedTrue — cannot be flipped
         assertEq(uint8(market.getAssertionData(id).status), uint8(UMAAssertionMarket.Status.ResolvedTrue));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BOND ECONOMICS: Verify UMA mainnet bond split
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_bondEconomics_noDispute_fullBondReturned() public {
+        bytes32 id = _createAssertion();
+        vm.warp(block.timestamp + LIVENESS + 1);
+        market.settleAssertion(id);
+
+        // No dispute: full bond returned
+        UMAAssertionMarket.AssertionData memory data = market.getAssertionData(id);
+        assertEq(data.bondReturned, uint128(BOND));
+    }
+
+    function test_bondEconomics_disputed_winnerGets150Percent() public {
+        bytes32 id = _createAndDispute();
+        mockOO.resolveAssertion(id, true);
+        market.settleAssertion(id);
+
+        // Disputed, asserter wins: 1.5× bond (their bond + half loser's)
+        UMAAssertionMarket.AssertionData memory data = market.getAssertionData(id);
+        assertEq(data.bondReturned, uint128(BOND + BOND_REWARD));
+    }
+
+    function test_bondEconomics_disputed_loserLosesEntireBond() public {
+        // Create assertion, dispute, disputer wins
+        bytes32 id = _createAndDispute();
+        mockOO.resolveAssertion(id, false);
+        market.settleAssertion(id);
+
+        // Disputer wins and withdraws
+        uint256 disputerBalBefore = disputer.balance;
+        vm.prank(disputer);
+        market.withdraw(id);
+
+        // Disputer gets: market + 1.5× bond
+        assertEq(disputer.balance, disputerBalBefore + MARKET_AMOUNT + BOND + BOND_REWARD);
+
+        // Asserter gets nothing (their bond was slashed, market went to disputer)
+        // Verify asserter can't withdraw again
+        vm.prank(asserter);
+        vm.expectRevert(UMAAssertionMarket.AlreadyWithdrawn.selector);
+        market.withdraw(id);
+    }
+
+    function test_bondEconomics_umaStoreFee_remainsInMock() public {
+        bytes32 id = _createAndDispute();
+        mockOO.resolveAssertion(id, true);
+
+        // Track WETH in mock before settlement (holds both bonds = 2× BOND)
+        uint256 mockWethBefore = weth.balanceOf(address(mockOO));
+        assertEq(mockWethBefore, 2 * BOND);
+
+        market.settleAssertion(id);
+
+        // Mock retains 0.5× bond (UMA Store fee), returned 1.5× to market contract
+        uint256 mockWethAfter = weth.balanceOf(address(mockOO));
+        assertEq(mockWethAfter, BOND_REWARD); // 0.5× bond stays in mock
     }
 }
