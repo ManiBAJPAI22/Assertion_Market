@@ -472,11 +472,32 @@ If an assertion somehow resolves FALSE without a disputer (theoretical edge case
 ## 9. Deployment & Usage
 
 ### 9.1 Prerequisites
-- [Foundry](https://getfoundry.sh/) (v1.4.4+)
+- [Foundry](https://getfoundry.sh/) (v1.4.4+) **or** [Docker](https://docs.docker.com/get-docker/)
 - Sepolia ETH (from faucets)
 - MetaMask or similar wallet (for frontend)
 
-### 9.2 Build & Test
+### 9.2 Quick Start with Docker
+
+No local toolchain needed — just Docker:
+
+```bash
+# Build the image (one-time)
+docker build -t uma-foundry .
+
+# Run all 48 tests
+docker run --rm uma-foundry
+
+# Gas report
+docker run --rm uma-foundry forge test --gas-report
+
+# Interactive shell (forge, cast, anvil available)
+docker run --rm -it uma-foundry sh
+
+# Serve frontend at http://localhost:8080
+docker run --rm -p 8080:80 -v ./frontend:/usr/share/nginx/html:ro nginx:alpine
+```
+
+### 9.3 Build & Test (without Docker)
 ```bash
 forge build
 forge test -vvv           # All 48 tests
@@ -484,7 +505,7 @@ forge test --gas-report   # Gas breakdown per function
 forge snapshot            # Generate .gas-snapshot file
 ```
 
-### 9.3 Deploy to Sepolia (Live OO v3)
+### 9.4 Deploy to Sepolia (Live OO v3)
 ```bash
 cp .env.example .env
 # Edit .env with your PRIVATE_KEY, SEPOLIA_RPC_URL, ETHERSCAN_API_KEY
@@ -493,13 +514,13 @@ source .env
 forge script script/Deploy.s.sol --broadcast --rpc-url $SEPOLIA_RPC_URL --verify
 ```
 
-### 9.4 Deploy Sandbox (Isolated Testing)
+### 9.5 Deploy Sandbox (Isolated Testing)
 ```bash
 forge script script/OracleSandbox.s.sol --broadcast --rpc-url $SEPOLIA_RPC_URL --verify
 ```
 The sandbox deploys a `MockOptimisticOracleV3` where disputes can be resolved manually via `resolveAssertion(assertionId, truthful)` — no DVM voting needed. Liveness is set to 120 seconds for fast testing.
 
-### 9.5 Interact via cast
+### 9.6 Interact via cast
 ```bash
 # Create assertion (0.001 ETH bond + 0.01 ETH market)
 cast send $MARKET_ADDRESS "createAssertion(bytes)" \
@@ -523,15 +544,37 @@ cast send $MOCK_OO "resolveAssertion(bytes32,bool)" $ASSERTION_ID true \
   --private-key $PRIVATE_KEY --rpc-url $SEPOLIA_RPC_URL
 ```
 
-### 9.6 Frontend
-A self-contained single-page frontend is available at `frontend/index.html`. Open directly in a browser with MetaMask on Sepolia. Features:
+### 9.7 Frontend
+
+A self-contained single-page dApp (no build step, no backend) at `frontend/index.html`.
+
+**How to run locally:**
+```bash
+# Option 1: Python (built-in)
+cd frontend
+python3 -m http.server 8080
+# Open http://localhost:8080
+
+# Option 2: Node (npx)
+npx serve frontend
+# Open http://localhost:3000
+
+# Option 3: Open directly
+# Just open frontend/index.html in your browser (file:// works for this SPA)
+```
+
+**Live deployment:** Hosted via GitHub Pages at `docs/index.html` — accessible at your repo's GitHub Pages URL.
+
+**Requirements:** MetaMask (or any injected wallet) connected to **Sepolia testnet**.
+
+**Features:**
 - Create assertions with custom claim text
 - Lookup assertions by ID
 - Dispute, settle, and withdraw via MetaMask
 - Recent assertions feed with live countdown timers
 - Toggle between Live and Sandbox deployments
 
-### 9.7 Key Addresses (Sepolia)
+### 9.8 Key Addresses (Sepolia)
 
 | Contract | Address |
 |---|---|
@@ -567,6 +610,8 @@ UMA/
 │   └── OracleSandbox.s.sol              # Sandbox deployment (mock OO)
 ├── frontend/
 │   └── index.html                       # Single-page frontend (MetaMask + ethers.js v6)
+├── Dockerfile                           # Foundry container for build & test
+├── docker-compose.yml                   # Docker Compose (foundry + frontend services)
 ├── foundry.toml                         # Foundry config (Solidity 0.8.22, optimizer 200 runs)
 ├── remappings.txt                       # @openzeppelin/ import mapping
 ├── .env.example                         # Environment template
